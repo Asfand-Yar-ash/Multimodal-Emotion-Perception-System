@@ -1,0 +1,21 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual env
+venv/
+.env
+.env.*
+
+# Data / models / outputs
+output.json
+models/
+pretrained_models/
+*.h5
+*.pt
+*.pth
+
+# IDE
+.vscode/
+.idea/
