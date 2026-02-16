@@ -16,7 +16,7 @@ def video_worker(latest_audio_store: LatestAudio, stop_event: threading.Event):
         print("[main] Cannot open camera")
         return
     # Initialize processors
-    fe = FacialEmotion(model_path="models/mini_xception.h5")  # optional path
+    fe = FacialEmotion(model_path="models/model_best.keras")  # optional path
     pg = PoseGestureEstimator()
     try:
         while not stop_event.is_set():

@@ -36,53 +36,63 @@ class AudioEmotionProcessor:
             audio_frame = np.mean(audio_frame, axis=1)
         pcm16 = (audio_frame * 32767).astype(np.int16)
         return pcm16.tobytes()
-
     def start_stream(self, on_segment_callback):
-        """
-        on_segment_callback: function(bytes or np.array, sr) -> called when a speech segment is collected
-        """
         self.on_segment_callback = on_segment_callback
         self._stop.clear()
-        self.ring_buffer = collections.deque()
+
         self.in_speech = False
         self.speech_buffer = bytearray()
+        self.vad_buffer = bytearray()
 
+        FRAME_SAMPLES = int(self.sr * self.frame_duration_ms / 1000)
+        FRAME_BYTES = FRAME_SAMPLES * 2
         def callback(indata, frames, time_info, status):
             if status:
                 print(f"[audio] status: {status}", file=sys.stderr)
-            pcm_bytes = self._bytes_to_pcm16(indata.copy())
-            # chunk into frame_duration_ms frames for VAD
-            chunk_size = int(self.sr * (self.frame_duration_ms / 1000.0))
-            # indata is frames x channels; we produce bytes of length chunk_size*2
-            # Store raw float frames in ring buffer for assembling segment data (we will write WAV later)
-            self.ring_buffer.append(indata.copy())
-            # For VAD, feed 30ms frames
-            offset = 0
-            pcm_arr = pcm_bytes
-            # Since we produce exact-length chunk bytes from callback, just process once
-            is_speech = self.vad.is_speech(pcm_arr, sample_rate=self.sr)
-            if is_speech:
-                self.in_speech = True
-                # append raw float samples to speech buffer as float32 array bytes (we will rebuild later)
-                self.speech_buffer.extend(pcm_arr)
-            else:
-                if self.in_speech:
-                    # End of speech segment detected
-                    # Build np.array from speech_buffer (pcm16 bytes)
-                    pcm16 = np.frombuffer(self.speech_buffer, dtype=np.int16).astype(np.float32) / 32767.0
-                    # Save as WAV temp file and call pipeline on it
-                    try:
-                        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tf:
-                            sf.write(tf.name, pcm16, self.sr, subtype='PCM_16')
-                            if self.on_segment_callback:
-                                self.on_segment_callback(tf.name, self.sr)
-                    except Exception as e:
-                        print("[audio] error writing temp wav:", e)
-                    finally:
-                        self.speech_buffer = bytearray()
+
+            pcm_bytes = self._bytes_to_pcm16(indata)
+
+            self.vad_buffer.extend(pcm_bytes)
+
+            while len(self.vad_buffer) >= FRAME_BYTES:
+                frame = self.vad_buffer[:FRAME_BYTES]
+                self.vad_buffer = self.vad_buffer[FRAME_BYTES:]
+
+                try:
+                    is_speech = self.vad.is_speech(frame, self.sr)
+                except Exception as e:
+                    print("[audio] VAD error:", e)
+                    self.in_speech = False
+                    self.speech_buffer.clear()
+                    continue
+
+                if is_speech:
+                    self.in_speech = True
+                    self.speech_buffer.extend(frame)
+                else:
+                    if self.in_speech:
+                        pcm16 = np.frombuffer(self.speech_buffer, dtype=np.int16).astype(np.float32) / 32767.0
+
+                        try:
+                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tf:
+                                sf.write(tf.name, pcm16, self.sr, subtype="PCM_16")
+                                if self.on_segment_callback:
+                                    self.on_segment_callback(tf.name, self.sr)
+                        except Exception as e:
+                            print("[audio] wav write error:", e)
+
+                        self.speech_buffer.clear()
                         self.in_speech = False
 
-        self.stream = sd.InputStream(callback=callback, channels=1, samplerate=self.sr, device=self.device, dtype='float32')
+        self.stream = sd.InputStream(
+            callback=callback,
+            channels=1,
+            samplerate=self.sr,
+            device=self.device,
+            dtype="float32",
+            blocksize=FRAME_SAMPLES
+        )
+
         self.stream.start()
         print("[audio] stream started")
 
